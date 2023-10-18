@@ -72,3 +72,65 @@ func Test_maxWorkers(t *testing.T) {
 	}
 
 }
+
+func Test_GetMessageQueue(t *testing.T) {
+	q1, err := goimq.NewMessageQueue[bool, int](
+		goimq.QueueConfig[bool, int]{
+			Name: "q1",
+			ConsumerFn: func(i bool) (int, error) {
+				return 2, nil
+			},
+		},
+	)
+
+	if err != nil {
+		t.Error(err)
+	}
+
+	q2, err := goimq.NewMessageQueue[int, string](
+		goimq.QueueConfig[int, string]{
+			Name: "q2",
+			ConsumerFn: func(i int) (string, error) {
+				return "hello", nil
+			},
+		},
+	)
+
+	if err != nil {
+		t.Error(err)
+	}
+
+	q, err := goimq.GetMessageQueue[bool, int]("q1")
+	if err != nil {
+		t.Error(err)
+	}
+
+	if q != q1 {
+		t.Error("q1 not returned")
+	}
+
+	qq, err := goimq.GetMessageQueue[int, string]("q2")
+	if err != nil {
+		t.Error(err)
+	}
+
+	if qq != q2 {
+		t.Error("q2 not returned")
+	}
+
+	_, err = goimq.GetMessageQueue[int, int]("q1")
+	if err != goimq.ErrQueueTypeMismatch {
+		t.Error("q1 returned")
+	}
+
+	_, err = goimq.GetMessageQueue[bool, string]("q2")
+	if err != goimq.ErrQueueTypeMismatch {
+		t.Error("q2 returned")
+	}
+
+	_, err = goimq.GetMessageQueue[int, int]("q3")
+	if err != goimq.ErrQueueNotFound {
+		t.Error("q3 returned")
+	}
+
+}

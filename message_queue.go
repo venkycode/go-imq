@@ -7,8 +7,6 @@ import (
 	"github.com/google/uuid"
 )
 
-var ErrQueueFull = errors.New("queue is full")
-
 type ConsumerFn[T any, R any] func(T) (R, error)
 
 type messageInternal[T any] struct {
@@ -21,6 +19,8 @@ type MessageQueue[T any, R any] struct {
 	queue                 chan messageInternal[T]
 	messageProcessingInfo sync.Map
 }
+
+var messageQueueStore sync.Map
 
 type MessageProcessingInfo[ReturnType any] struct {
 	RemainingAttempts uint
@@ -89,7 +89,27 @@ func NewMessageQueue[T any, R any](config QueueConfig[T, R]) (*MessageQueue[T, R
 	}
 	mq.start()
 
+	messageQueueStore.Store(config.Name, mq)
+
 	return mq, nil
+}
+
+var ErrQueueNotFound = errors.New("queue not found")
+var ErrQueueTypeMismatch = errors.New("queue type mismatch")
+
+func GetMessageQueue[T any, R any](name string) (*MessageQueue[T, R], error) {
+	mq, ok := messageQueueStore.Load(name)
+	if !ok {
+		return nil, ErrQueueNotFound
+	}
+
+	mqTyped, ok := mq.(*MessageQueue[T, R])
+	if !ok {
+		return nil, ErrQueueTypeMismatch
+	}
+
+	return mqTyped, nil
+
 }
 
 func (mq *MessageQueue[T, R]) start() {
