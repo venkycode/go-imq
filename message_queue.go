@@ -24,16 +24,16 @@ type MessageQueue[T any, R any] struct {
 
 type MessageProcessingInfo[ReturnType any] struct {
 	RemainingAttempts uint
-	State             MessageState
+	State             MessageProcessingState
 
 	Result ReturnType
 	Error  error
 }
 
-type MessageState int
+type MessageProcessingState int
 
 const (
-	MessageStateQueued MessageState = iota
+	MessageStateQueued MessageProcessingState = iota
 	MessageStateProcessing
 	MessageStateCompleted
 )
@@ -165,4 +165,12 @@ func (mq *MessageQueue[T, R]) Push(message T) (messageID string, ok bool) {
 	default:
 		return "", false
 	}
+}
+
+func (mq *MessageQueue[T, R]) GetMessageProcessingInfo(messageID string) (MessageProcessingInfo[R], bool) {
+	info, ok := mq.messageProcessingInfo.Load(messageID)
+	if !ok {
+		return MessageProcessingInfo[R]{}, false
+	}
+	return info.(MessageProcessingInfo[R]), true
 }
