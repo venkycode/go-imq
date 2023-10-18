@@ -112,6 +112,23 @@ func GetMessageQueue[T any, R any](name string) (*MessageQueue[T, R], error) {
 
 }
 
+// GetMessageQueueInferType is a helper function to get a message queue without having to specify the type parameters.
+// Just pass the consumer function you used to create the queue.
+func GetMessageQueueInferType[T any, R any](name string, consumerFn ConsumerFn[T, R]) (*MessageQueue[T, R], error) {
+	mq, ok := messageQueueStore.Load(name)
+	if !ok {
+		return nil, ErrQueueNotFound
+	}
+
+	mqTyped, ok := mq.(*MessageQueue[T, R])
+	if !ok {
+		return nil, ErrQueueTypeMismatch
+	}
+
+	return mqTyped, nil
+
+}
+
 func (mq *MessageQueue[T, R]) start() {
 
 	for i := uint(0); i < *mq.config.MaxWorkers; i++ {
