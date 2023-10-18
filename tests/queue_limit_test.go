@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -9,28 +10,30 @@ import (
 
 func Test_testMaxMessages(t *testing.T) {
 
-	five := uint(5)
-
+	maxMessages := uint(5)
+	maxWorkers := uint(1)
 	newQueue, error := goimq.NewMessageQueue[int, int](goimq.QueueConfig[int, int]{
 		Name: "test",
-		ConsumerFn: func(int) (int, error) {
-			time.Sleep(10 * time.Second)
+		ConsumerFn: func(i int) (int, error) {
+			fmt.Println(i)
+			time.Sleep(2000 * time.Second)
 			return 0, nil
 		},
-		MaxMessages: &five,
+		MaxMessages: &maxMessages,
+		MaxWorkers:  &maxWorkers,
 	})
 
 	if error != nil {
 		t.Error(error)
 	}
 
-	for i := 0; i < 10; i++ {
-		ok := newQueue.Push(i)
-		if !ok && i < 5 {
+	for i := 1; i <= 10; i++ {
+		_, ok := newQueue.Push(i)
+		if !ok && i <= int(maxMessages+maxWorkers) {
 			t.Error("Push failed")
 		}
 
-		if ok && i >= 5 {
+		if ok && i > int(maxMessages+maxWorkers) {
 			t.Error("Push succeeded")
 		}
 	}
