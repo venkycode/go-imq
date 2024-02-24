@@ -27,15 +27,15 @@ type MessageProcessingInfo[ReturnType any] struct {
 	State             MessageProcessingState
 
 	Result ReturnType
-	Error  error
+	Errors []error
 }
 
 type MessageProcessingState int
 
 const (
-	MessageStateQueued MessageProcessingState = iota
-	MessageStateProcessing
-	MessageStateCompleted
+	MessageStateQueued     MessageProcessingState = iota // still in the queue
+	MessageStateProcessing                               // currently being processed
+	MessageStateCompleted                                // processing completed (either successfully or after all retries)
 )
 
 type QueueConfig[T any, R any] struct {
@@ -57,14 +57,17 @@ func DefaultQueueConfig[T any, R any]() QueueConfig[T, R] {
 	}
 }
 
+var ErrConsumerFnRequired = errors.New("consumer function is required")
+var ErrQueueNameRequired = errors.New("queue name is required")
+
 func NewMessageQueue[T any, R any](config QueueConfig[T, R]) (*MessageQueue[T, R], error) {
 
 	if config.ConsumerFn == nil {
-		return nil, errors.New("consumer function is required")
+		return nil, ErrConsumerFnRequired
 	}
 
 	if config.Name == "" {
-		return nil, errors.New("queue name is required")
+		return nil, ErrQueueNameRequired
 	}
 
 	defaultConfig := DefaultQueueConfig[T, R]()
@@ -112,95 +115,71 @@ func GetMessageQueue[T any, R any](name string) (*MessageQueue[T, R], error) {
 
 }
 
-// GetMessageQueueInferType is a helper function to get a message queue without having to specify the type parameters.
-// Just pass the consumer function you used to create the queue.
-func GetMessageQueueInferType[T any, R any](name string, consumerFn ConsumerFn[T, R]) (*MessageQueue[T, R], error) {
-	mq, ok := messageQueueStore.Load(name)
-	if !ok {
-		return nil, ErrQueueNotFound
-	}
-
-	mqTyped, ok := mq.(*MessageQueue[T, R])
-	if !ok {
-		return nil, ErrQueueTypeMismatch
-	}
-
-	return mqTyped, nil
-
-}
-
 func (mq *MessageQueue[T, R]) start() {
 
+	// Start workers
 	for i := uint(0); i < *mq.config.MaxWorkers; i++ {
 		go func() {
-			for {
-				mq.processMessageWithRetries(*mq.config.MaxAttempts, <-mq.queue)
+			for { // keep processing messages on each worker
+				message := <-mq.queue
+				messageState, ok := mq.GetMessageProcessingInfo(message.messageID)
+				if !ok {
+					continue
+				}
+
+				mq.processMessageWithRetries(message, messageState)
 			}
 		}()
 	}
 
 }
 
-func (mq *MessageQueue[T, R]) processMessageWithRetries(remainingAttempts uint, messageInternal messageInternal[T]) {
-	// Guard clause to prevent infinite loop
-	if remainingAttempts == 0 {
+func (mq *MessageQueue[T, R]) processMessageWithRetries(messageInternal messageInternal[T], latestMessageState MessageProcessingInfo[R]) {
+	if latestMessageState.RemainingAttempts == 0 {
 		return
 	}
-	mq.messageProcessingInfo.Store(messageInternal.messageID, MessageProcessingInfo[R]{
-		RemainingAttempts: remainingAttempts,
-		State:             MessageStateProcessing,
-		Result:            zeroOf[R](),
-		Error:             nil,
-	})
 
 	result, err := mq.config.ConsumerFn(messageInternal.message)
-	remainingAttempts--
+	latestMessageState.RemainingAttempts = latestMessageState.RemainingAttempts - 1
+	latestMessageState.Result = result
 
 	switch {
 	case err == nil:
-		state := MessageStateCompleted
-		mq.messageProcessingInfo.Store(messageInternal.messageID, MessageProcessingInfo[R]{
-			RemainingAttempts: remainingAttempts,
-			State:             state,
-			Result:            result,
-			Error:             nil,
-		})
+		latestMessageState.State = MessageStateCompleted // message processing completed successfully
+		mq.messageProcessingInfo.Store(messageInternal.messageID, latestMessageState)
 		return
-	case err != nil && remainingAttempts == 0:
-		state := MessageStateCompleted
-		mq.messageProcessingInfo.Store(messageInternal.messageID, MessageProcessingInfo[R]{
-			RemainingAttempts: remainingAttempts,
-			State:             state,
-			Result:            result,
-			Error:             err,
-		})
+	case err != nil && latestMessageState.RemainingAttempts == 0:
+		latestMessageState.State = MessageStateCompleted // message processing completed after all retries
+		latestMessageState.Errors = append(latestMessageState.Errors, err)
+		mq.messageProcessingInfo.Store(messageInternal.messageID, latestMessageState)
 		return
-	case err != nil && remainingAttempts > 0:
-		state := MessageStateProcessing
-		mq.messageProcessingInfo.Store(messageInternal.messageID, MessageProcessingInfo[R]{
-			RemainingAttempts: remainingAttempts,
-			State:             state,
-			Result:            zeroOf[R](),
-			Error:             nil,
-		})
-		mq.processMessageWithRetries(remainingAttempts, messageInternal)
+	case err != nil && latestMessageState.RemainingAttempts > 0:
+		latestMessageState.State = MessageStateProcessing // message processing failed, but will be retried
+		latestMessageState.Errors = append(latestMessageState.Errors, err)
+		mq.messageProcessingInfo.Store(messageInternal.messageID, latestMessageState)
+		mq.processMessageWithRetries(messageInternal, latestMessageState)
 	}
 
 }
 
 func (mq *MessageQueue[T, R]) Push(message T) (messageID string, ok bool) {
 	messageID = uuid.New().String()
+	mq.messageProcessingInfo.Store(messageID, mq.initialMessageProcessingInfo())
 	select {
 	case mq.queue <- messageInternal[T]{messageID: messageID, message: message}:
-		mq.messageProcessingInfo.Store(messageID, MessageProcessingInfo[R]{
-			RemainingAttempts: *mq.config.MaxAttempts,
-			State:             MessageStateQueued,
-			Result:            zeroOf[R](),
-			Error:             nil,
-		})
 		return messageID, true
 	default:
+		mq.messageProcessingInfo.Delete(messageID)
 		return "", false
+	}
+}
+
+func (mq *MessageQueue[T, R]) initialMessageProcessingInfo() MessageProcessingInfo[R] {
+	return MessageProcessingInfo[R]{
+		RemainingAttempts: *mq.config.MaxAttempts,
+		State:             MessageStateQueued,
+		Result:            zeroOf[R](),
+		Errors:            nil,
 	}
 }
 
