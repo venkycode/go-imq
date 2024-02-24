@@ -190,3 +190,8 @@ func (mq *MessageQueue[T, R]) GetMessageProcessingInfo(messageID string) (Messag
 	}
 	return info.(MessageProcessingInfo[R]), true
 }
+
+func zeroOf[T any]() T {
+	var zero T
+	return zero
+}
